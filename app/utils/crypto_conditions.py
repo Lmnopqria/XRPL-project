@@ -36,7 +36,12 @@ class CryptoConditionManager:
         
         # Create condition (SHA256 hash of fulfillment)
         condition_bytes = hashlib.sha256(fulfillment.encode('utf-8')).digest()
+        # XRPL expects condition as uppercase hex string
         condition = condition_bytes.hex().upper()
+        
+        # Ensure it's exactly 64 characters (32 bytes)
+        if len(condition) != 64:
+            raise ValueError(f"Invalid condition length: {len(condition)}")
         
         # Store fulfillment with a key
         fulfillment_key = f"{disaster_type}:{region}"
