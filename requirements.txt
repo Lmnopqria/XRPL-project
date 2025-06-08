@@ -22,3 +22,12 @@ uvicorn==0.27.1
 websockets==11.0.3
 wrapt==1.17.2
 xrpl-py==2.5.0
+# For environment variables and settings
+python-dotenv==1.0.0
+pydantic-settings==2.0.3
+
+# For weather API calls
+httpx==0.25.2
+
+# For async scheduling
+apscheduler==3.10.4
