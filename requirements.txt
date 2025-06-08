@@ -2,3 +2,15 @@ fastapi==0.109.2
 uvicorn==0.27.1
 python-dotenv==1.0.1
 pydantic==2.6.1 
+
+# XRPL Python SDK
+xrpl-py==2.5.0
+
+# For environment variables
+python-dotenv==1.0.0
+
+# For weather API calls
+httpx==0.25.2
+
+# For async scheduling
+apscheduler==3.10.4
