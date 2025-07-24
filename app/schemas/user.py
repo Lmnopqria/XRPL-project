@@ -15,7 +15,7 @@ class UserLogin(BaseModel):
 
 class User(UserBase):
     user_id: int
-    balance: float
+    balance: int
     wallet_address: str
 
     class Config:

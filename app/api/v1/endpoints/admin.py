@@ -1,5 +1,4 @@
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
-import xrpl
 import os
 from dotenv import load_dotenv
 from sqlalchemy.orm import Session
@@ -9,16 +8,21 @@ from app.models.record import Record, TransactionType
 from app.models.donation_summary import DonationSummary
 from typing import List, Dict
 from pydantic import BaseModel
+
 import asyncio
-from xrpl.asyncio.transaction import submit_and_wait
+from xrpl.wallet import Wallet
 from xrpl.asyncio.clients import AsyncJsonRpcClient
+from xrpl.asyncio.account import get_balance
+from app.core.xrpl_transaction import send_xrp_to_user
 
 class DistributeRequest(BaseModel):
     disaster_area: str
+    amount: str
 
 router = APIRouter()
 load_dotenv()
 
+# DB related functions
 def create_transaction_record(
     db: Session,
     user_id: str,
@@ -36,7 +40,7 @@ def create_transaction_record(
     """
     record = Record(
         user_id=int(user_id),
-        amount=float(amount),
+        amount=int(amount),
         type=transaction_type.value  # Using Enum value
     )
     db.add(record)
@@ -75,54 +79,19 @@ def update_user_balance(db: Session, user_id: str, amount: str):
     """
     user = db.query(UserModel).filter(UserModel.user_id == int(user_id)).first()
     if user:
-        user.balance += float(amount)
+        user.balance += int(amount)
         db.commit()
 
-async def send_xrp_to_user(
-    central_wallet: xrpl.wallet.Wallet,
-    receiver_address: str,
-    amount: str,
-    user_id: str,
-    client: AsyncJsonRpcClient,
-    db: Session
-):
-    """
-    Send XRP from central wallet to a user and record the transaction
-    
-    Args:
-        central_wallet: Central wallet to send XRP from
-        receiver_address: User's wallet address to receive XRP
-        amount: Amount of XRP to send
-        user_id: Receiver's user ID
-        client: XRPL client instance
-        db: Database session
-    """
-    try:
-        # Send XRP
-        payment_tx = xrpl.models.Payment(
-            account=central_wallet.address,
-            amount=amount,
-            destination=receiver_address,
-        )
-        await submit_and_wait(payment_tx, client, central_wallet)
-        
-        # Update user's balance and record the transaction
-        update_user_balance(db, user_id, amount)
-        create_transaction_record(db, user_id, amount)
-        
-        return True
-    except Exception as e:
-        print(f"Error sending XRP to user {user_id}: {str(e)}")
-        return False
-
+# Background Function
 async def process_distribution(
-    central_wallet: xrpl.wallet.Wallet,
+    central_wallet: Wallet,
     affected_users: List[Dict[str, str]],
     amount: str,
     client: AsyncJsonRpcClient,
     db: Session
-) -> float:
-    """Process XRP distribution to all affected users"""
+):
+    # Register tasks to be done
+    print(f"[Distribution Process Start] Starting distribution of {amount} XRP each to {len(affected_users)} users.")
     tasks = []
     for user in affected_users:
         task = send_xrp_to_user(
@@ -140,7 +109,26 @@ async def process_distribution(
     
     # Calculate total successful distributions
     successful_count = sum(1 for result in results if result is True)
-    return float(amount) * successful_count
+    print(f"[Distribution Process Complete] Number of users successfully distributed: {successful_count}/{len(affected_users)}")
+
+async def check_central_wallet_balance(central_wallet, client):
+    """
+    Check central balance
+    """
+    try:
+        central_wallet_address = central_wallet.classic_address
+        balance = await get_balance(central_wallet_address, client)
+        if balance is None or int(balance) == 0:
+            raise HTTPException(
+                status_code=500,
+                detail="Central wallet balance is zero or could not be retrieved."
+            )
+        return balance
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to check central wallet balance: {str(e)}"
+        )
 
 @router.post("/distribute")
 async def distribute_fund(
@@ -148,50 +136,48 @@ async def distribute_fund(
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db)
 ):
+    # Create wallet object and client from seed
     central_wallet_seed = os.getenv('CENTRAL_WALLET_SEED')
     if not central_wallet_seed:
         raise HTTPException(
             status_code=500,
             detail="CENTRAL_WALLET_SEED environment variable is not set"
         )
-    
     try:
-        central_wallet = xrpl.wallet.Wallet.from_seed(central_wallet_seed)
+        central_wallet = Wallet.from_seed(central_wallet_seed)
     except ValueError as e:
         raise HTTPException(
             status_code=500,
             detail=f"Invalid CENTRAL_WALLET_SEED format: {str(e)}"
         )
-        
     client = AsyncJsonRpcClient(os.getenv('TESTNET_URL'))
-    
+
+    # Check central wallet balance and verify the wallet
+    balance = await check_central_wallet_balance(central_wallet, client)
+
     # Get all users in the disaster area
     affected_users = get_users_by_area(db, request.disaster_area)
-    
     if not affected_users:
         raise HTTPException(
             status_code=404,
             detail="No users found in the specified disaster area"
         )
     
-    # Calculate total amount to be distributed
-    amount = "10" # temporary amount
-    total_distribution = float(amount) * len(affected_users)
-    
-    # Check if we have enough funds
-    summary = db.query(DonationSummary).filter(DonationSummary.id == 1).first()
-    if not summary or summary.total < total_distribution:
+    if int(request.amoun) >= balance:
         raise HTTPException(
             status_code=400,
-            detail="Insufficient funds in donation pool"
+            detail="Amount Exceed the Balance"
         )
-    
+    # Calculate total amount to be distributed
+    distibute_amount = int(request.amount) // len(affected_users) 
+
+    print(f"[Distribution Request] disaster_area={request.disaster_area}, number of users={len(affected_users)}, amount per user={distibute_amount}")
     # Start the distribution process in the background
     background_tasks.add_task(
         process_distribution,
         central_wallet,
         affected_users,
-        amount,
+        str(distibute_amount),
         client,
         db
     )
@@ -200,30 +186,29 @@ async def distribute_fund(
         "message": "Distribution process started",
         "affected_users_count": len(affected_users),
         "area": request.disaster_area,
-        "estimated_total": total_distribution
+        "estimated_total": request.amount
     }
 
-# import asyncio
-# from xrpl.asyncio.transaction import sign, submit_and_wait
-# from xrpl.asyncio.ledger import get_latest_validated_ledger_sequence
-# from xrpl.asyncio.account import get_next_valid_seq_number
-# from xrpl.asyncio.clients import AsyncJsonRpcClient
-# async_client = AsyncJsonRpcClient(JSON_RPC_URL)
-# async def submit_sample_transaction():
-#     current_validated_ledger = await get_latest_validated_ledger_sequence(async_client)
-
-#     # prepare the transaction
-#     # the amount is expressed in drops, not XRP
-#     # see https://xrpl.org/basic-data-types.html#specifying-currency-amounts
-#     my_tx_payment = Payment(
-#         account=test_wallet.address,
-#         amount="2200000",
-#         destination="rPT1Sjq2YGrBMTttX4GZHjKu9dyfzbpAYe",
-#         last_ledger_sequence=current_validated_ledger + 20,
-#         sequence=await get_next_valid_seq_number(test_wallet.address, async_client),
-#         fee="10",
-#     )
-#     # sign and submit the transaction
-#     tx_response = await submit_and_wait(my_tx_payment_signed, async_client, test_wallet)
-
-# asyncio.run(submit_sample_transaction())
+@router.get("/pool-balance")
+async def get_pool_balance():
+    central_wallet_seed = os.getenv('CENTRAL_WALLET_SEED')
+    if not central_wallet_seed:
+        raise HTTPException(
+            status_code=500,
+            detail="CENTRAL_WALLET_SEED environment variable is not set"
+        )
+    try:
+        central_wallet = Wallet.from_seed(central_wallet_seed)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Invalid CENTRAL_WALLET_SEED format: {str(e)}"
+        )
+    client = AsyncJsonRpcClient(os.getenv('TESTNET_URL'))
+    try:
+        balance = await check_central_wallet_balance(central_wallet, client)
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to check central wallet balance: {str(e)}")
+    return {"pool_balance": balance}

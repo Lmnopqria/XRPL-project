@@ -4,7 +4,7 @@ from app.models.record import TransactionType
 
 class RecordBase(BaseModel):
     user_id: int
-    amount: float
+    amount: int
     type: TransactionType
 
 class RecordCreate(RecordBase):
