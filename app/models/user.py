@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float
+from sqlalchemy import Column, Integer, String, BigInteger
 from app.core.database import Base
 
 class User(Base):
@@ -10,6 +10,6 @@ class User(Base):
     first_name = Column(String(100), nullable=False)
     last_name = Column(String(100), nullable=False)
     address = Column(String(255), nullable=False)
-    balance = Column(Float, default=0.0)
+    balance = Column(BigInteger, default=0.0)
     wallet_address = Column(String(255), nullable=False)
     seed = Column(String(255), nullable=False) 

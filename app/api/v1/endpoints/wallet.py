@@ -21,6 +21,7 @@ TESTNET_URL = os.getenv('TESTNET_URL', 'https://s.altnet.rippletest.net:51234/')
 FERNET_KEY = os.getenv('FERNET_KEY', Fernet.generate_key())
 fernet = Fernet(FERNET_KEY)
 
+# To be used for future implementation (ex. Check balance with DB)
 def get_user_wallet(user: UserModel) -> xrpl.wallet.Wallet:
     """
     Decrypt user's seed and create XRPL wallet
@@ -42,7 +43,14 @@ def get_user_wallet(user: UserModel) -> xrpl.wallet.Wallet:
             detail="Failed to create wallet: " + str(e)
         )
 
-@router.get("/balance")
+@router.get(
+    "/balance",
+    responses={
+        401: {"description": "Unauthorized"},
+        503: {"description": "XRPL network is temporarily unavailable."},
+        500: {"description": "Failed to get balance."}
+    }
+)
 def get_balance(current_user: UserModel = Depends(get_current_active_user)):
     try:
         client = xrpl.clients.JsonRpcClient(TESTNET_URL)
@@ -60,17 +68,24 @@ def get_balance(current_user: UserModel = Depends(get_current_active_user)):
         )
 
 class DonateRequest(BaseModel):
-    amount: float
+    amount: int
 
     @validator('amount')
     def validate_amount(cls, v):
         if v <= 0:
             raise ValueError("Amount must be higher than 0")
-        if not isinstance(v, (int, float)):
+        if not isinstance(v, (int)):
             raise ValueError("Amount must be a number")
-        return float(v)
+        return int(v)
 
-@router.post("/donate")
+@router.post(
+    "/donate",
+    responses={
+        401: {"description": "Unauthorized"},
+        400: {"description": "Insufficient balance or invalid request"},
+        500: {"description": "Failed to process donation"}
+    }
+)
 def donate_fund(
     request: DonateRequest,
     current_user: UserModel = Depends(get_current_active_user),
@@ -110,13 +125,12 @@ def donate_fund(
     )
     db.add(record)
     db.commit()
-    
+
+    # TODO: ADD create ESCROW, save result or revert if failed
+
     return {
         "message": "Donation successful",
         "amount": request.amount,
         "remaining_balance": current_user.balance,
         "total_donations": summary.total
     }
-
-    # wallet = get_user_wallet(current_user)
-    # return {wallet}

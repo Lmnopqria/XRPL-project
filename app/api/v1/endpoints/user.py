@@ -83,7 +83,7 @@ def create_user(user: UserCreate, db: Session = Depends(get_db)):
             first_name=user.first_name,
             last_name=user.last_name,
             address=user.address,
-            balance=10000000.0,
+            balance=10000000,
             wallet_address=wallet.address,
             seed=encrypt_seed(wallet.seed)
         )
