@@ -3,15 +3,19 @@ import xrpl
 import os
 from dotenv import load_dotenv
 from cryptography.fernet import Fernet
-from app.core.security import get_current_active_user
-from app.models.user import User as UserModel
 import httpx
-from app.core.security import get_current_active_user
-from app.models.record import Record, TransactionType
-from app.models.donation_summary import DonationSummary
 from pydantic import BaseModel, validator
 from sqlalchemy.orm import Session
+import secrets
+from datetime import datetime, timedelta
+from app.core.security import get_current_active_user
 from app.core.database import get_db
+from app.models.user import User as UserModel
+from app.models.record import Record, TransactionType
+from app.models.donation_summary import DonationSummary
+from app.models.escrow_record import EscrowRecord, EscrowStatus
+from app.escrow.escrow_sample import make_escrow
+
 
 router = APIRouter()
 load_dotenv()
@@ -40,7 +44,7 @@ def get_user_wallet(user: UserModel) -> xrpl.wallet.Wallet:
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail="Failed to create wallet: " + str(e)
+            detail="Failed to retrieve wallet: " + str(e)
         )
 
 @router.get(
@@ -69,13 +73,10 @@ def get_balance(current_user: UserModel = Depends(get_current_active_user)):
 
 class DonateRequest(BaseModel):
     amount: int
-
     @validator('amount')
     def validate_amount(cls, v):
         if v <= 0:
             raise ValueError("Amount must be higher than 0")
-        if not isinstance(v, (int)):
-            raise ValueError("Amount must be a number")
         return int(v)
 
 @router.post(
@@ -108,6 +109,7 @@ def donate_fund(
     
     # Update user's balance
     current_user.balance -= request.amount
+    db.add(current_user)
     
     # Update donation summary
     summary = db.query(DonationSummary).filter(DonationSummary.id == 1).first()
@@ -116,7 +118,7 @@ def donate_fund(
         db.add(summary)
     else:
         summary.total += request.amount
-    
+
     # Record the donation
     record = Record(
         user_id=current_user.user_id,
@@ -124,9 +126,34 @@ def donate_fund(
         type=TransactionType.DONATED.value
     )
     db.add(record)
-    db.commit()
 
-    # TODO: ADD create ESCROW, save result or revert if failed
+    # Make Escorw
+    CANCEL_AFTER_DAYS = int(os.getenv('CANCEL_AFTER_DAYS', 365))
+    cancel_date = datetime.now() + timedelta(days=CANCEL_AFTER_DAYS)
+    secret_key = secrets.token_urlsafe(32)
+    try:
+        tx_sequence = make_escrow(current_user.wallet_address, secret_key, request.amount, cancel_date)
+    except Exception as e:
+         raise HTTPException(status_code=500, detail=str(e))
+
+    # Record the escrow transaction
+    encrypted_secret_key = fernet.encrypt(secret_key.encode()).decode()
+    escrow_record = EscrowRecord(
+        user_id=current_user.user_id,
+        from_wallet_address=current_user.wallet_address,
+        tx_sequence=tx_sequence,
+        secret_key=encrypted_secret_key,
+        cancel_date=cancel_date,
+        amount=request.amount,
+        status=EscrowStatus.REGISTERED
+    )
+    db.add(escrow_record)
+
+    try:
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail='failed to write db:' + str(e))
 
     return {
         "message": "Donation successful",

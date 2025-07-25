@@ -10,6 +10,6 @@ class User(Base):
     first_name = Column(String(100), nullable=False)
     last_name = Column(String(100), nullable=False)
     address = Column(String(255), nullable=False)
-    balance = Column(BigInteger, default=0.0)
+    balance = Column(BigInteger, default=0)
     wallet_address = Column(String(255), nullable=False)
     seed = Column(String(255), nullable=False) 
