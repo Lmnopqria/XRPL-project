@@ -2,18 +2,16 @@ from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 import os
 from dotenv import load_dotenv
 from sqlalchemy.orm import Session
-from app.core.database import get_db
-from app.models.user import User as UserModel
-from app.models.record import Record, TransactionType
-from app.models.donation_summary import DonationSummary
 from typing import List, Dict
 from pydantic import BaseModel
-
 import asyncio
 from xrpl.wallet import Wallet
 from xrpl.asyncio.clients import AsyncJsonRpcClient
 from xrpl.asyncio.account import get_balance
+from app.core.database import get_db
 from app.core.xrpl_transaction import send_xrp_to_user
+from app.models.user import User as UserModel
+from app.models.record import Record, TransactionType
 
 class DistributeRequest(BaseModel):
     disaster_area: str

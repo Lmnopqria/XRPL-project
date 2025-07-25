@@ -114,8 +114,7 @@ def donate_fund(
     # Update donation summary
     summary = db.query(DonationSummary).filter(DonationSummary.id == 1).first()
     if not summary:
-        summary = DonationSummary(id=1, total=request.amount)
-        db.add(summary)
+        raise HTTPException(status_code=500, detail="Donation summary record does not exist.")
     else:
         summary.total += request.amount
 
