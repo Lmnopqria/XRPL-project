@@ -12,7 +12,7 @@ Creates a new conditional escrow using a preimage-based hash condition and `canc
 **Parameters:**
 - `from_address` (str): Sender’s XRP wallet address  
 - `secret_key` (str): Preimage used to generate the hash condition  
-- `amount` (float): Amount in XRP to escrow  
+- `amount` (int): Amount in XRP to escrow  
 - `cancel_after` (int): UNIX timestamp after which the escrow can be cancelled  
 
 **Returns:**
