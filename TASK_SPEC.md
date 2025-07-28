@@ -24,17 +24,18 @@ The `to_address` (receiver wallet) is fixed and defined inside the function.
 
 ---
 
-## 🔹 Function 2: `release_escrow(tx_sequence, from_address, secret_key)`
+## 🔹 Function 2: `release_escrow(escrow_id, tx_sequence, from_address, secret_key)`
 **Description:**  
 Releases an existing escrow using the original preimage (`secret_key`).
 
 **Parameters:**
+- `escrow_id` (int): Identifier of the escrow to release
 - `tx_sequence` (int): Sequence number of the original escrow transaction  
 - `from_address` (str): Escrow creator's wallet address  
 - `secret_key` (str): Preimage to fulfill the escrow condition  
 
 **Returns:**
-- Result indicating whether the release succeeded or not
+- Tuple (escrow_id, success: bool)
 
 ---
 
@@ -47,7 +48,29 @@ Releases an existing escrow using the original preimage (`secret_key`).
     save_in_db(secret_key, tx_sequence, amount, from_address)
 
 @post("/distribute"):
-    escrow_list = get_escrows_from_db()
-    for escrow in escrow_list:
-        release_escrow(escrow.tx_sequence, escrow.from_address, escrow.secret_key)
-    distribute_fund_from_central_wallet()
+    central_wallet = get_central_wallet()
+    affected_users = get_affected_users()
+    background_tasks.add_task(process_distribution, ...)
+    return {"message": "Background distribution started"}
+ 
+async def process_distribution(central_wallet, affected_users, client, db):
+    # 1. Retrieve related Escrow records
+    escrows = get_escrows_for_users()
+
+    # 2. Process Escrow releases in parallel
+    escrow_tasks = []
+    for escrow in escrows:
+        task = release_escrow(escrow.tx_sequence, escrow.from_address, escrow.secret_key)
+        escrow_tasks.append(task)
+    escrow_results = await asyncio.gather(*escrow_tasks, return_exceptions=True)
+
+    # 3. Check balance and calculate per-user payout
+    total_balance = get_balance(central_wallet)
+    per_user_amount = calculate_share(total_balance, len(affected_users))
+
+    # 4. Send payments to beneficiaries in parallel
+    send_tasks = []
+    for user in affected_users:
+        task = send_xrp_to_user(user, per_user_amount)
+        send_tasks.append(task)
+    send_results = await asyncio.gather(*send_tasks, return_exceptions=True)
