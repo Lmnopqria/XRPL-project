@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from app.models.record import Record, TransactionType
 from app.models.user import User as UserModel
 from app.models.donation_summary import DonationSummary
+from app.models.transaction_record import TransactionRecord, TransactionStatus
 
 async def send_xrp_to_user(
     central_wallet: xrpl.wallet.Wallet,
@@ -25,16 +26,20 @@ async def send_xrp_to_user(
         client: XRPL client instance
         db: Database session
     """
+ 
+    # Submit transaction with retry logic
+
     try:
-        # Send XRP
+        # Send XRP with explicit sequence number
         payment_tx = xrpl.models.Payment(
             account=central_wallet.address,
             amount=amount,
-            destination=receiver_address,
+            destination=receiver_address
         )
-        await submit_and_wait(payment_tx, client, central_wallet)
-        
-        # Update user's balance 
+        result = await submit_and_wait(payment_tx, client, central_wallet)
+        tx_hash = result.result.get("hash") if hasattr(result, "result") else None
+
+        # Update user's balance
         user = db.query(UserModel).filter(UserModel.user_id == int(user_id)).first()
         if user:
             user.balance += int(amount)
@@ -47,6 +52,17 @@ async def send_xrp_to_user(
         )
         db.add(record)
 
+        # 트랜잭션 기록 추가
+        tx_record = TransactionRecord(
+            user_id=int(user_id),
+            from_wallet_address=central_wallet.address,
+            to_wallet_address=receiver_address,
+            tx_hash=tx_hash or "",
+            amount=int(amount),
+            status=TransactionStatus.SUCCESS.value
+        )
+        db.add(tx_record)
+
         # Update the total pool
         summary = db.query(DonationSummary).filter(DonationSummary.id == 1).first()
         if not summary:
@@ -55,14 +71,22 @@ async def send_xrp_to_user(
             raise Exception(status_code=500, detail="amount can't be negative")
         summary.total -= int(amount)
 
-        try:
-            db.commit()
-        except Exception as e:
-            db.rollback()
-            raise Exception(status_code=500, detail="DB commit failed:"  + str(e))
-
+        db.commit()
         print(f"[Success] Successfully sent {amount} XRP to user {user_id}.")
         return True
     except Exception as e:
+        # 실패 시에는 rollback 먼저!
+        db.rollback()
+        # 실패 기록 추가
+        tx_record = TransactionRecord(
+            user_id=int(user_id),
+            from_wallet_address=central_wallet.address,
+            to_wallet_address=receiver_address,
+            tx_hash="",
+            amount=int(amount),
+            status=TransactionStatus.FAILED.value
+        )
+        db.add(tx_record)
+        db.commit()
         print(f"[Failure] Failed to send XRP to user {user_id}: {str(e)}")
         return False 

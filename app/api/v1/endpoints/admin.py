@@ -10,39 +10,22 @@ from xrpl.asyncio.clients import AsyncJsonRpcClient
 from xrpl.asyncio.account import get_balance
 from app.core.database import get_db
 from app.core.xrpl_transaction import send_xrp_to_user
+from app.core.escrow_processor import process_escrow_results
 from app.models.user import User as UserModel
-from app.models.record import Record, TransactionType
+from app.models.donation_summary import DonationSummary
+from app.models.escrow_record import EscrowRecord, EscrowStatus
+from app.escrow.escrow_sample import release_escrow
+
+from cryptography.fernet import Fernet
+FERNET_KEY = os.getenv('FERNET_KEY', Fernet.generate_key())
+fernet = Fernet(FERNET_KEY)
 
 class DistributeRequest(BaseModel):
     disaster_area: str
-    amount: str
 
 router = APIRouter()
 load_dotenv()
 
-# DB related functions
-def create_transaction_record(
-    db: Session,
-    user_id: str,
-    amount: str,
-    transaction_type: TransactionType = TransactionType.RECEIVED
-):
-    """
-    Create a transaction record in the database
-    
-    Args:
-        db: Database session
-        user_id: User ID who received/sent XRP
-        amount: Amount of XRP
-        transaction_type: Type of transaction (default: RECEIVED)
-    """
-    record = Record(
-        user_id=int(user_id),
-        amount=int(amount),
-        type=transaction_type.value  # Using Enum value
-    )
-    db.add(record)
-    db.commit()
 
 def get_users_by_area(db: Session, area: str) -> List[Dict[str, str]]:
     """
@@ -66,45 +49,61 @@ def get_users_by_area(db: Session, area: str) -> List[Dict[str, str]]:
         for user in users
     ]
 
-def update_user_balance(db: Session, user_id: str, amount: str):
-    """
-    Update user's balance in the database
-    
-    Args:
-        db: Database session
-        user_id: User ID whose balance needs to be updated
-        amount: Amount to add to the balance
-    """
-    user = db.query(UserModel).filter(UserModel.user_id == int(user_id)).first()
-    if user:
-        user.balance += int(amount)
-        db.commit()
-
 # Background Function
 async def process_distribution(
     central_wallet: Wallet,
     affected_users: List[Dict[str, str]],
-    amount: str,
     client: AsyncJsonRpcClient,
     db: Session
 ):
-    # Register tasks to be done
-    print(f"[Distribution Process Start] Starting distribution of {amount} XRP each to {len(affected_users)} users.")
+    # Procss All the Escrows
+    escrows = db.query(EscrowRecord).filter(EscrowRecord.status == EscrowStatus.REGISTERED).all()
+    for escrow in escrows:
+        escrow.status = EscrowStatus.PROCESSING
+    db.commit()
+    print(f"[Start Releasing Escrows] Started to release {len(escrows)} registered escrows.")
     tasks = []
+   
+    for escrow in escrows:
+        decrypted_secret_key = fernet.decrypt(escrow.secret_key.encode()).decode()
+        task = release_escrow(
+            escrow_id=escrow.escrow_id,
+            tx_sequence=escrow.tx_sequence,
+            from_address=escrow.from_wallet_address,
+            secret_key=decrypted_secret_key
+        )
+        tasks.append(task)
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    successful_count, total_escrows, released_sum = process_escrow_results(db, results)
+    
+    print(f"[Escrow Release Summary] Successfully released {successful_count}/{total_escrows} escrows. \nTotal amount released: {released_sum}")
+    if released_sum == 0 or total_escrows == 0:
+        print("[Escrow Release Error] No Escrow released")
+        return
+
+    # Check central wallet balance and verify the wallet
+    balance = await check_central_wallet_balance(central_wallet, client)
+    print(f"central_wallet balance:{balance}, Released amount{released_sum}")
+    if balance < released_sum:
+        print("[Escrow Release Error] Central wallet balance not enough.")
+        return
+    # Calculate total amount to be distributed
+    distibute_amount = released_sum // len(affected_users) 
+
+    # Register tasks to be done
+    print(f"[Distribution Process Start] Starting distribution of {distibute_amount} XRP each to {len(affected_users)} users.")
+    results = []
     for user in affected_users:
-        task = send_xrp_to_user(
+        result = await send_xrp_to_user(
             central_wallet=central_wallet,
             receiver_address=user["wallet_address"],
-            amount=amount,
+            amount=str(distibute_amount),
             user_id=user["user_id"],
             client=client,
             db=db
         )
-        tasks.append(task)
-    
-    # Start all transfers concurrently
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-    
+        results.append(result)
+
     # Calculate total successful distributions
     successful_count = sum(1 for result in results if result is True)
     print(f"[Distribution Process Complete] Number of users successfully distributed: {successful_count}/{len(affected_users)}")
@@ -150,9 +149,6 @@ async def distribute_fund(
         )
     client = AsyncJsonRpcClient(os.getenv('TESTNET_URL'))
 
-    # Check central wallet balance and verify the wallet
-    balance = await check_central_wallet_balance(central_wallet, client)
-
     # Get all users in the disaster area
     affected_users = get_users_by_area(db, request.disaster_area)
     if not affected_users:
@@ -161,21 +157,17 @@ async def distribute_fund(
             detail="No users found in the specified disaster area"
         )
     
-    if int(request.amoun) >= balance:
-        raise HTTPException(
-            status_code=400,
-            detail="Amount Exceed the Balance"
-        )
-    # Calculate total amount to be distributed
-    distibute_amount = int(request.amount) // len(affected_users) 
-
-    print(f"[Distribution Request] disaster_area={request.disaster_area}, number of users={len(affected_users)}, amount per user={distibute_amount}")
+    summary = db.query(DonationSummary).filter(DonationSummary.id == 1).first()
+    if not summary:
+        raise HTTPException(status_code=500, detail="Donation summary record does not exist.")
+    pool_balance = summary.total
+    print(f"[Distribution Request] disaster_area={request.disaster_area}, number of users={len(affected_users)}, amount per user={pool_balance}")
+    
     # Start the distribution process in the background
     background_tasks.add_task(
         process_distribution,
         central_wallet,
         affected_users,
-        str(distibute_amount),
         client,
         db
     )
@@ -184,7 +176,7 @@ async def distribute_fund(
         "message": "Distribution process started",
         "affected_users_count": len(affected_users),
         "area": request.disaster_area,
-        "estimated_total": request.amount
+        "estimated_total": pool_balance
     }
 
 @router.get("/pool-balance")

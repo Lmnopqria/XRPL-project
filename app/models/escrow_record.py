@@ -16,9 +16,9 @@ class EscrowRecord(Base):
 
     escrow_id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.user_id"), nullable=False)
-    from_wallet_address = Column(String, nullable=False)
-    tx_sequence = Column(String, nullable=False)
-    secret_key = Column(String, nullable=False)
+    from_wallet_address = Column(String(255), nullable=False)
+    tx_sequence = Column(String(100), nullable=False)
+    secret_key = Column(String(200), nullable=False)
     cancel_date = Column(DateTime(timezone=True), nullable=False)
     amount = Column(BigInteger, nullable=False)
     status = Column(Enum(EscrowStatus, values_callable=lambda obj: [e.value for e in obj]), nullable=False)
